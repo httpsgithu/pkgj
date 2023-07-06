@@ -1,0 +1,69 @@
+name: build
+run-name: Build
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install apt dependencies
+        run: sudo apt-get install -y ninja-build g++-12
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+      - name: Install python dependencies
+        run: sudo pip3 install poetry==1.3.2
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          cache: 'poetry'
+      - name: Cache Conan packages
+        id: cache-conan
+        uses: actions/cache@v3
+        with:
+          path: ~/.conan2/p
+          key: ${{ runner.os }}-conan
+      - run: ci/ci.sh
+      - name: Upload linux build
+        uses: actions/upload-artifact@v3
+        with:
+          name: pkgj_cli
+          path: ci/buildhost/pkgj_cli
+      - name: Upload vita build
+        uses: actions/upload-artifact@v3
+        with:
+          name: pkgj.vpk
+          path: ci/build/pkgj.vpk
+  publish:
+    needs: build
+    if: ${{ startsWith(github.event.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: last
+      - name: Remove previous version
+        run: |
+          rm *.vpk
+          echo ${{ github.ref_name }} > version
+      - uses: actions/download-artifact@v3
+        with:
+          name: pkgj.vpk
+      - uses: svenstaro/upload-release-action@v2
+        with:
+          file: pkgj.vpk
+          release_name: "PKGJ ${{ github.ref_name }}"
+          prerelease: ${{ contains(github.ref_name, 'beta') }}
+      - name: Prepare new version
+        run: |
+          git config --global user.name "GitHub actions"
+          git config --global user.email "actions@github.com"
+
+          mv pkgj.vpk pkgj-${{ github.ref_name }}.vpk
+          git add -u
+          git add pkgj-${{ github.ref_name }}.vpk
+          git commit -m "Push ${{ github.ref_name }}"
+      - name: Upload new version
+        if: ${{ !contains(github.ref_name, 'beta') }}
+        run: git push origin last
