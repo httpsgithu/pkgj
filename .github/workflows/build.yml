@@ -47,7 +47,8 @@ jobs:
       - name: Remove previous version
         run: |
           rm *.vpk
-          echo ${{ github.ref_name }} > version
+          refname=${{ github.ref_name }}
+          echo -n ${refname:1} > version
       - uses: actions/download-artifact@v3
         with:
           name: pkgj.vpk
