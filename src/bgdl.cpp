@@ -1,5 +1,5 @@
 #include "bgdl.hpp"
-
+#include "download.hpp"
 #include "file.hpp"
 #include "log.hpp"
 
@@ -35,7 +35,8 @@ typedef struct ipmi_download_param
 
 typedef struct sce_ipmi_download_param
 {
-    union {
+    union
+    {
         struct
         {
             uint32_t* ptr_to_dc0_ptr;
@@ -180,8 +181,8 @@ void init_download_class(scedownload_class* sceDownloadObj)
 
     sceDownloadObj->init =
             (SceDownloadInit)(*(sceDownloadObj->class_header->func_table))[1];
-    sceDownloadObj->change_state = (SceDownloadChangeState)(
-            *(sceDownloadObj->class_header->func_table))[5];
+    sceDownloadObj->change_state = (SceDownloadChangeState)(*(
+            sceDownloadObj->class_header->func_table))[5];
 
     res = sceDownloadObj->init(
             sceDownloadObj->class_header->func_table,
@@ -315,14 +316,24 @@ void pkgi_start_bgdl(
                 "be able to download more.");
 
     static auto example_class = new_scedownload();
+    std::string license_path = "ux0:bgdl/temp.dat";
 
-    const std::string license_path = "ux0:bgdl/temp.dat";
-    pkgi_save(license_path, rif.data(), rif.size());
-
+    int rif_size = rif.size();
+    if(rif_size >= PKGI_PSM_RIF_SIZE) {
+        if (type == BgdlTypePsp)
+            rif_size = PKGI_PSP_RIF_SIZE;
+        else if(type == BgdlTypePsm)
+            rif_size = PKGI_PSM_RIF_SIZE;
+        else 
+            rif_size = PKGI_RIF_SIZE;
+    }
+    
+    pkgi_save(license_path, rif.data(), rif_size);
+    
     scedownload_start_with_rif(
             example_class.get(),
             title.c_str(),
             url.c_str(),
-            license_path.c_str(),
+            (rif_size > 0) ? license_path.c_str() : "",
             type);
 }

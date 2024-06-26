@@ -19,7 +19,8 @@ extern "C"
 #include "utils.hpp"
 #include "vitahttp.hpp"
 #include "zrif.hpp"
-#include <imgui_internal.h>
+#include "psm.hpp"
+#include "file.hpp"
 
 #include <vita2d.h>
 
@@ -27,6 +28,8 @@ extern "C"
 
 #include <memory>
 #include <set>
+
+#include <psp2common/npdrm.h>
 
 #include <cstddef>
 #include <cstring>
@@ -61,6 +64,8 @@ int bottom_y;
 char search_text[256];
 char error_state[256];
 
+std::vector<DbItem *> selected_items; 
+
 // used for multiple things actually
 Mutex refresh_mutex("refresh_mutex");
 std::string current_action;
@@ -73,8 +78,8 @@ std::set<std::string> installed_themes;
 
 std::unique_ptr<GameView> gameview;
 bool need_refresh = true;
+bool runtime_install_queued = false;
 std::string content_to_refresh;
-
 void pkgi_reload();
 
 const char* pkgi_get_ok_str(void)
@@ -116,6 +121,12 @@ BgdlType mode_to_bgdl_type(Mode mode)
 {
     switch (mode)
     {
+    case ModePspGames:
+    case ModePsxGames:
+    case ModePspDlcs:
+        return BgdlTypePsp;
+    case ModePsmGames:
+        return BgdlTypePsm;
     case ModeGames:
     case ModeDemos:
         return BgdlTypeGame;
@@ -249,11 +260,9 @@ void pkgi_refresh_thread(void)
 
 const char* pkgi_get_mode_partition()
 {
-    return mode == ModePspGames
-        || mode == ModePspDlcs
-        || mode == ModePsxGames
-    ? config.install_psp_psx_location.c_str()
-    : "ux0:";
+    return mode == ModePspGames || mode == ModePspDlcs || mode == ModePsxGames
+                   ? config.install_psp_psx_location.c_str()
+                   : "ux0:";
 }
 
 void pkgi_refresh_installed_packages()
@@ -286,17 +295,28 @@ bool pkgi_theme_is_installed(std::string contentid)
     return installed_themes.find(contentid) != installed_themes.end();
 }
 
+void do_download(Downloader& downloader, DbItem* item) {
+    pkgi_start_download(downloader, *item);
+    item->presence = PresenceUnknown;
+}
+
 void pkgi_install_package(Downloader& downloader, DbItem* item)
 {
     if (item->presence == PresenceInstalled)
     {
         LOGF("[{}] {} - already installed", item->content, item->name);
-        pkgi_dialog_error("Already installed");
+        pkgi_dialog_question(
+        fmt::format(
+                "{} is already installed."
+                "Would you like to redownload it?", 
+                item->name)
+                .c_str(),
+        {{"Redownload.", [&downloader, item] { do_download(downloader, item); }},
+         {"Dont Redownload.", [] {} }});
         return;
     }
-
-    pkgi_start_download(downloader, *item);
-    item->presence = PresenceUnknown;
+    
+    do_download(downloader, item);
 }
 
 void pkgi_friendly_size(char* text, uint32_t textlen, int64_t size)
@@ -583,7 +603,8 @@ void pkgi_do_main(Downloader& downloader, pkgi_input* input)
                 VITA_WIDTH - PKGI_MAIN_SCROLL_WIDTH - PKGI_MAIN_SCROLL_PADDING -
                         PKGI_MAIN_COLUMN_PADDING - sizew - col_name,
                 line_height);
-        pkgi_draw_text(col_name, y, color, item->name.c_str());
+        item->selected = std::find(selected_items.begin(), selected_items.end(), item) != selected_items.end();
+        pkgi_draw_text(col_name, y, item->selected ? PKGI_COLOR_TEXT_SELECTED : PKGI_COLOR_TEXT , item->name.c_str());
         pkgi_clip_remove();
 
         y += font_height + PKGI_MAIN_ROW_PADDING;
@@ -658,7 +679,35 @@ void pkgi_do_main(Downloader& downloader, pkgi_input* input)
         {
             pkgi_start_download(downloader, *item);
         }
-        else
+        else if (mode == ModeDlcs)
+        {
+            if (selected_items.empty())
+            {
+                if (downloader.is_in_queue(mode_to_type(mode), item->content))
+                {
+                    downloader.remove_from_queue(mode_to_type(mode), item->content);
+                    item->presence = PresenceUnknown;
+                }
+                else
+                    pkgi_install_package(downloader, item);
+            }
+            else
+            {
+                for(int i = 0; i < selected_items.size(); i++)
+                {
+                    if (downloader.is_in_queue(mode_to_type(mode), selected_items[i]->content))
+                    {
+                        downloader.remove_from_queue(mode_to_type(mode), selected_items[i]->content);
+                        selected_items[i]->content = PresenceUnknown;
+                    }
+                    else
+                        pkgi_install_package(downloader, selected_items[i]);
+                }
+                selected_items.clear();
+            }
+                
+        }
+        else 
         {
             if (downloader.is_in_queue(mode_to_type(mode), item->content))
             {
@@ -669,20 +718,35 @@ void pkgi_do_main(Downloader& downloader, pkgi_input* input)
                 pkgi_install_package(downloader, item);
         }
     }
+    else if (input && (input->pressed & PKGI_BUTTON_S))
+    {
+        if (mode == ModeDlcs) 
+        {
+            input->pressed &= ~PKGI_BUTTON_S;
+            DbItem* item = db->get(selected_item);
+            if(std::find(selected_items.begin(), selected_items.end(), item) != selected_items.end())
+            {
+                selected_items.erase(std::find(selected_items.begin(),selected_items.end(), item));
+            }
+            else if(selected_items.size() < 32 - pkgi_list_dir_contents("ux0:bgdl/t").size())
+            {
+                selected_items.push_back(item);
+            }
+        }
+    }
     else if (input && (input->pressed & PKGI_BUTTON_T))
     {
         input->pressed &= ~PKGI_BUTTON_T;
 
         config_temp = config;
-        int allow_refresh =
-                !config.games_url.empty() << 0 |
-                !config.dlcs_url.empty() << 1 |
-                !config.demos_url.empty() << 6 |
-                !config.themes_url.empty() << 5 |
-                !config.psx_games_url.empty() << 2 |
-                !config.psp_games_url.empty() << 3 |
-                !config.psp_dlcs_url.empty() << 7 |
-                !config.psm_games_url.empty() << 4;
+        int allow_refresh = !config.games_url.empty() << 0 |
+                            !config.dlcs_url.empty() << 1 |
+                            !config.demos_url.empty() << 6 |
+                            !config.themes_url.empty() << 5 |
+                            !config.psx_games_url.empty() << 2 |
+                            !config.psp_games_url.empty() << 3 |
+                            !config.psp_dlcs_url.empty() << 7 |
+                            !config.psm_games_url.empty() << 4;
         pkgi_menu_start(search_active, &config, allow_refresh);
     }
 }
@@ -852,7 +916,11 @@ void pkgi_do_tail(Downloader& downloader)
         pkgi_snprintf(text, sizeof(text), "Idle");
 
     pkgi_draw_text(0, bottom_y, PKGI_COLOR_TEXT_TAIL, text);
-
+    if (mode == ModeDlcs) 
+    {
+        pkgi_snprintf(text, sizeof(text), "Selected items: %d/%d", selected_items.size(), 32 - pkgi_list_dir_contents("ux0:bgdl/t").size());
+        pkgi_draw_text((VITA_WIDTH - pkgi_text_width(text)) / 2, bottom_y, PKGI_COLOR_TEXT_TAIL, text);
+    }
     const auto second_line = bottom_y + font_height + PKGI_MAIN_ROW_PADDING;
 
     uint32_t count = db->count();
@@ -897,11 +965,10 @@ void pkgi_do_tail(Downloader& downloader)
     int right = rightw + PKGI_MAIN_TEXT_PADDING;
 
     std::string bottom_text;
-    if (gameview || pkgi_dialog_is_open()) {
+    if (gameview || pkgi_dialog_is_open())
+    {
         bottom_text = fmt::format(
-                "{} select {} close",
-                pkgi_get_ok_str(),
-                pkgi_get_cancel_str());
+                "{} select {} close", pkgi_get_ok_str(), pkgi_get_cancel_str());
     }
     else if (pkgi_menu_is_open())
     {
@@ -922,7 +989,9 @@ void pkgi_do_tail(Downloader& downloader)
             else if (item && item->presence != PresenceInstalled)
                 bottom_text += fmt::format("{} install ", pkgi_get_ok_str());
         }
-        bottom_text += PKGI_UTF8_T " menu";
+        bottom_text += PKGI_UTF8_T " menu ";
+        if (mode == ModeDlcs)
+            bottom_text += PKGI_UTF8_S " select";
     }
 
     pkgi_clip_set(
@@ -1011,36 +1080,74 @@ void pkgi_open_db()
 }
 }
 
+void pkgi_create_psp_rif(std::string contentid, uint8_t* rif)
+{
+    SceNpDrmLicense license;
+    memset(&license, 0x00, sizeof(SceNpDrmLicense));
+    license.account_id = 0x0123456789ABCDEFLL;
+    memset(license.ecdsa_signature, 0xFF, 0x28);
+    strncpy(license.content_id, contentid.c_str(), 0x30);
+
+    memcpy(rif, &license, PKGI_PSP_RIF_SIZE);
+}
+
+
+void pkgi_download_psm_runtime_if_needed() {
+    if(!pkgi_is_installed("PCSI00011") && !runtime_install_queued) {
+        
+        uint8_t rif[PKGI_PSM_RIF_SIZE];
+        char message[256];
+        pkgi_zrif_decode(PSM_RUNTIME_DRMFREE_LICENSE, rif, message, sizeof(message));
+        
+        pkgi_start_bgdl(
+            BgdlTypeGame,
+            "PlayStation Mobile Runtime Package",
+            "http://ares.dl.playstation.net/psm-runtime/IP9100-PCSI00011_00-PSMRUNTIME000000.pkg",
+            std::vector<uint8_t>(rif, rif + PKGI_PSM_RIF_SIZE));
+            
+        runtime_install_queued = true;
+    }
+}
+
+
 void pkgi_start_download(Downloader& downloader, const DbItem& item)
 {
     LOGF("[{}] {} - starting to install", item.content, item.name);
 
     try
     {
+        // download PSM Runtime if a PSM game is requested to be installed ..
+        if(mode == ModePsmGames)
+            pkgi_download_psm_runtime_if_needed();
         // Just use the maximum size to be safe
         uint8_t rif[PKGI_PSM_RIF_SIZE];
         char message[256];
         if (item.zrif.empty() ||
             pkgi_zrif_decode(item.zrif.c_str(), rif, message, sizeof(message)))
         {
-            if (mode == ModeGames || mode == ModeDlcs || mode == ModeDemos ||
-                mode == ModeThemes)
+            if ( 
+                mode == ModeGames || mode == ModeDlcs || mode == ModeDemos || mode == ModeThemes || // Vita contents
+                (MODE_IS_PSPEMU(mode) && pkgi_is_module_present("NoPspEmuDrm_kern")) || // Psp Contents
+                (mode == ModePsmGames && pkgi_is_module_present("NoPsmDrm")) // Psm Contents
+            )
             {
+
+                if (MODE_IS_PSPEMU(mode)) {
+                    pkgi_create_psp_rif(item.content, rif);
+                }
+                
                 pkgi_start_bgdl(
                         mode_to_bgdl_type(mode),
                         item.name,
                         item.url,
-                        item.zrif.empty()
-                                ? std::vector<uint8_t>{}
-                                : std::vector<uint8_t>(
-                                          rif, rif + PKGI_PSM_RIF_SIZE));
+                        std::vector<uint8_t>(rif, rif + PKGI_PSM_RIF_SIZE));
                 pkgi_dialog_message(
                         fmt::format(
                                 "Installation of {} queued in LiveArea",
                                 item.name)
                                 .c_str());
             }
-            else
+            else {
                 downloader.add(DownloadItem{
                         mode_to_type(mode),
                         item.name,
@@ -1057,6 +1164,7 @@ void pkgi_start_download(Downloader& downloader, const DbItem& item)
                         !config.install_psp_as_pbp,
                         pkgi_get_mode_partition(),
                         ""});
+            }
         }
         else
         {
@@ -1084,12 +1192,14 @@ int main()
 
         Downloader downloader;
 
-        downloader.refresh = [](const std::string& content) {
+        downloader.refresh = [](const std::string& content)
+        {
             std::lock_guard<Mutex> lock(refresh_mutex);
             content_to_refresh = content;
             need_refresh = true;
         };
-        downloader.error = [](const std::string& error) {
+        downloader.error = [](const std::string& error)
+        {
             // FIXME this runs on the wrong thread
             pkgi_dialog_error(("Download failure: " + error).c_str());
         };
@@ -1110,10 +1220,10 @@ int main()
         if (!config.no_version_check)
             start_update_thread();
 
-        const auto imgui_context = ImGui::CreateContext();
-        // Force enabling of navigation
-        imgui_context->NavDisableHighlight = false;
+        ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 
         // Build and load the texture atlas into a texture
         uint32_t* pixels = NULL;
@@ -1154,16 +1264,20 @@ int main()
 
             if (gameview || pkgi_dialog_is_open())
             {
-                if (input.pressed & PKGI_BUTTON_UP)
-                    io.NavInputs[ImGuiNavInput_DpadUp] = 1.0f;
-                if (input.pressed & PKGI_BUTTON_DOWN)
-                    io.NavInputs[ImGuiNavInput_DpadDown] = 1.0f;
-                if (input.pressed & PKGI_BUTTON_LEFT)
-                    io.NavInputs[ImGuiNavInput_DpadLeft] = 1.0f;
-                if (input.pressed & PKGI_BUTTON_RIGHT)
-                    io.NavInputs[ImGuiNavInput_DpadRight] = 1.0f;
-                if (input.pressed & pkgi_ok_button())
-                    io.NavInputs[ImGuiNavInput_Activate] = 1.0f;
+                io.AddKeyEvent(
+                        ImGuiKey_GamepadDpadUp, input.pressed & PKGI_BUTTON_UP);
+                io.AddKeyEvent(
+                        ImGuiKey_GamepadDpadDown,
+                        input.pressed & PKGI_BUTTON_DOWN);
+                io.AddKeyEvent(
+                        ImGuiKey_GamepadDpadLeft,
+                        input.pressed & PKGI_BUTTON_LEFT);
+                io.AddKeyEvent(
+                        ImGuiKey_GamepadDpadRight,
+                        input.pressed & PKGI_BUTTON_RIGHT);
+                io.AddKeyEvent(
+                        ImGuiKey_GamepadFaceDown,
+                        input.pressed & pkgi_ok_button());
                 if (input.pressed & pkgi_cancel_button() && gameview)
                     gameview->close();
 
@@ -1257,6 +1371,8 @@ int main()
                 else
                 {
                     MenuResult mres = pkgi_menu_result();
+                    if (mres != MenuResultCancel)
+                        selected_items.clear();
                     switch (mres)
                     {
                     case MenuResultSearch:

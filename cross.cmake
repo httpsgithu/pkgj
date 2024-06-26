@@ -1,3 +1,8 @@
+find_package(vitasqlite REQUIRED)
+find_package(imgui REQUIRED)
+
+enable_language(ASM)
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
 
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY BOTH)
@@ -58,6 +63,7 @@ add_executable(pkgj
   src/gameview.cpp
   src/patchinfo.cpp
   src/patchinfofetcher.cpp
+  src/psx.cpp
   src/imagefetcher.cpp
   src/imgui.cpp
   src/install.cpp
@@ -75,12 +81,12 @@ add_executable(pkgj
 
 target_link_libraries(pkgj
   vita2d
-  CONAN_PKG::fmt
-  CONAN_PKG::boost_scope_exit
-  CONAN_PKG::vitasqlite
-  CONAN_PKG::cereal
-  CONAN_PKG::libzip
-  CONAN_PKG::imgui
+  fmt::fmt
+  Boost::headers
+  cereal::cereal
+  libzip::zip
+  vitasqlite::vitasqlite
+  imgui::imgui
   png
   jpeg
   z

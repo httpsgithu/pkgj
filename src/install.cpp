@@ -1,10 +1,12 @@
 #include "install.hpp"
 
+#include "psx.hpp"
 #include "extractzip.hpp"
 #include "file.hpp"
 #include "log.hpp"
 #include "sfo.hpp"
 #include "sqlite.hpp"
+#include "psx.hpp"
 
 #include <boost/scope_exit.hpp>
 
@@ -70,9 +72,15 @@ bool pkgi_psp_is_installed(const char* psppartition, const char* content)
 
 bool pkgi_psx_is_installed(const char* psppartition, const char* content)
 {
-    return pkgi_file_exists(
+    bool game_exist = pkgi_file_exists(
             fmt::format("{}pspemu/PSP/GAME/{:.9}", psppartition, content + 7)
                     .c_str());
+    
+    if(!game_exist) {
+        game_exist = pkgi_is_psx_game_installed_titleid(std::string(content + 7, 9));
+    }
+    
+    return game_exist;
 }
 
 void pkgi_install(const char* contentid)
@@ -132,7 +140,8 @@ CompPackVersion pkgi_get_comppack_versions(const std::string& titleid)
 
     const bool present = pkgi_file_exists(dir.c_str());
 
-    const auto base = [&] {
+    const auto base = [&]
+    {
         try
         {
             const auto data = pkgi_load(dir + "/base_comppack_version");
@@ -145,7 +154,8 @@ CompPackVersion pkgi_get_comppack_versions(const std::string& titleid)
             return std::string{};
         }
     }();
-    const auto patch = [&] {
+    const auto patch = [&]
+    {
         try
         {
             const auto data = pkgi_load(dir + "/patch_comppack_version");
@@ -180,32 +190,49 @@ void pkgi_install_psmgame(const char* contentid)
     ScePromoterUtilityImportParams promote_args;
     memset(&promote_args, 0, sizeof(promote_args));
 
-    strncpy(promote_args.path, base.c_str(), sizeof(promote_args.path)-1);
-    strncpy(promote_args.titleid, titleid.c_str(), sizeof(promote_args.titleid)-1);
+    strncpy(promote_args.path, base.c_str(), sizeof(promote_args.path) - 1);
+    strncpy(promote_args.titleid,
+            titleid.c_str(),
+            sizeof(promote_args.titleid) - 1);
     promote_args.type = SCE_PKG_TYPE_PSM;
     promote_args.attribute = 0x1;
 
     res = scePromoterUtilityPromoteImport(&promote_args);
     if (res < 0)
         throw formatEx<std::runtime_error>(
-            "scePromoterUtilityPromoteImport failed: {:#08x}",
-            static_cast<uint32_t>(res));
+                "scePromoterUtilityPromoteImport failed: {:#08x}",
+                static_cast<uint32_t>(res));
 }
 
 void pkgi_install_pspgame(const char* partition, const char* contentid)
 {
     LOG("Installing a PSP/PSX game");
     const auto path = fmt::format("{}pkgj/{}", partition, contentid);
-    const auto dest =
-            fmt::format("{}pspemu/PSP/GAME/{:.9}", partition, contentid + 7);
+    
+    const auto eboot_path = fmt::format("{}/EBOOT.PBP", path);
+    const auto sce_sys_path = fmt::format("{}/sce_sys", path);
+
+    // determine disc id from the pbp file
+    std::string title_id = std::string(contentid + 7, 9);
+    std::string disc_id = pkgi_pbp_read_disc_id(eboot_path);
+    if(disc_id.length() < 9)
+        disc_id = title_id;
+    
+    const auto dest = fmt::format("{}pspemu/PSP/GAME/{:.9}", partition, disc_id);
 
     pkgi_mkdirs(fmt::format("{}pspemu/PSP/GAME", partition).c_str());
+    
+    // sce_sys folder from pkg not included on psx and psp game
+    pkgi_delete_dir(sce_sys_path);
 
     LOG("installing psx game at %s to %s", path.c_str(), dest.c_str());
     int res = sceIoRename(path.c_str(), dest.c_str());
+    
     if (res < 0)
         throw std::runtime_error(fmt::format(
                 "failed to rename: {:#08x}", static_cast<uint32_t>(res)));
+    // add game to installed psx games list so it comes up as installed.
+    pkgi_psx_add_installed_game(title_id, disc_id);
 }
 
 static void pkgi_move_merge(const std::string& from, const std::string& to)

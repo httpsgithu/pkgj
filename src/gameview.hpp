@@ -4,9 +4,9 @@
 #include "config.hpp"
 #include "db.hpp"
 #include "downloader.hpp"
+#include "imagefetcher.hpp"
 #include "install.hpp"
 #include "patchinfofetcher.hpp"
-#include "imagefetcher.hpp"
 
 #include <optional>
 
@@ -58,6 +58,7 @@ private:
 
     std::string get_min_system_version();
     void printDiagnostic();
+    void do_download();
     void start_download_package();
     void cancel_download_package();
     void start_download_comppack(bool patch);

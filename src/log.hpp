@@ -1,7 +1,6 @@
 #pragma once
 
 #include <fmt/format.h>
-
 #include <stdexcept>
 
 #ifdef PKGI_ENABLE_LOGGING
@@ -27,7 +26,8 @@
 #endif
 
 template <typename E = std::runtime_error, typename... Args>
-[[nodiscard]] E formatEx(Args&&... args) {
+[[nodiscard]] E formatEx(Args&&... args)
+{
     return E(fmt::format(std::forward<Args>(args)...));
 }
 

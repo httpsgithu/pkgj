@@ -9,13 +9,13 @@ extern "C"
 #include "file.hpp"
 #include "http.hpp"
 #include "log.hpp"
+#include "psx.hpp"
 
 #include <fmt/format.h>
 
 #include <boost/scope_exit.hpp>
 
 #include <string>
-
 #include <vita2d.h>
 
 #include <psp2/appmgr.h>
@@ -48,7 +48,6 @@ extern "C"
 extern "C"
 {
     int _newlib_heap_size_user = 128 * 1024 * 1024;
-    extern SceUID _vshKernelSearchModuleByName(const char *name, SceUInt64 *unk);
 }
 
 static vita2d_pgf* g_font;
@@ -70,7 +69,7 @@ static int g_log_socket;
 #define ANALOG_THRESHOLD 64
 #define ANALOG_SENSITIVITY 16
 
-#define VITA_COLOR(c) RGBA8((c)&0xff, (c >> 8) & 0xff, (c >> 16) & 0xff, 255)
+#define VITA_COLOR(c) RGBA8((c) & 0xff, (c >> 8) & 0xff, (c >> 16) & 0xff, 255)
 
 #define PKGI_ERRNO_ENOENT (int)(0x80010000 + SCE_NET_ENOENT)
 
@@ -90,6 +89,7 @@ void pkgi_log(const char* msg, ...)
     // sceKernelDelayThread(10);
 }
 #endif
+
 
 int pkgi_snprintf(char* buffer, uint32_t size, const char* msg, ...)
 {
@@ -149,31 +149,38 @@ int pkgi_memequ(const void* a, const void* b, uint32_t size)
     return memcmp(a, b, size) == 0;
 }
 
-int pkgi_is_korean_char(const unsigned int c) {
+int pkgi_is_korean_char(const unsigned int c)
+{
     unsigned short ch = c;
     // hangul compatibility jamo block
-    if (0x3130 <= ch && ch <= 0x318f) {
+    if (0x3130 <= ch && ch <= 0x318f)
+    {
         return 1;
     }
     // hangul syllables block
-    if (0xac00 <= ch && ch <= 0xd7af) {
+    if (0xac00 <= ch && ch <= 0xd7af)
+    {
         return 1;
     }
     // korean won sign
-    if (ch == 0xffe6) {
+    if (ch == 0xffe6)
+    {
         return 1;
     }
     return 0;
 }
 
-int pkgi_is_latin_char(const unsigned int c) {
+int pkgi_is_latin_char(const unsigned int c)
+{
     unsigned short ch = c;
     // basic latin block + latin-1 supplement block
-    if (ch <= 0x00ff) {
+    if (ch <= 0x00ff)
+    {
         return 1;
     }
     // cyrillic block
-    if (0x0400 <= ch && ch <= 0x04ff) {
+    if (0x0400 <= ch && ch <= 0x04ff)
+    {
         return 1;
     }
     return 0;
@@ -219,13 +226,13 @@ static void pkgi_load_sce_paf()
             0x00000000,
     };
 
-    uint32_t result = 0xDEADBEEF;
+    int32_t result = 0xDEADBEEF;
 
-    uint32_t buffer[4] = {};
-    buffer[1] = (uint32_t)&result;
+    SceSysmoduleOpt opt{};
+    opt.result = &result;
 
     sceSysmoduleLoadModuleInternalWithArg(
-            SCE_SYSMODULE_INTERNAL_PAF, sizeof(args), args, buffer);
+            SCE_SYSMODULE_INTERNAL_PAF, sizeof(args), args, &opt);
 }
 
 int pkgi_is_unsafe_mode(void)
@@ -551,9 +558,9 @@ void pkgi_start(void)
 
     vita2d_init_advanced(4 * 1024 * 1024);
     vita2d_system_pgf_config pgf_confs[3] = {
-        {SCE_FONT_LANGUAGE_KOREAN,  pkgi_is_korean_char},
-        {SCE_FONT_LANGUAGE_LATIN,   pkgi_is_latin_char},
-        {SCE_FONT_LANGUAGE_DEFAULT, NULL},
+            {SCE_FONT_LANGUAGE_KOREAN, pkgi_is_korean_char},
+            {SCE_FONT_LANGUAGE_LATIN, pkgi_is_latin_char},
+            {SCE_FONT_LANGUAGE_DEFAULT, NULL},
     };
     g_font = vita2d_load_system_pgf(3, pgf_confs);
 
@@ -561,6 +568,10 @@ void pkgi_start(void)
 
     sqlite3_rw_init();
     LOG("start done");
+
+    LOG("Caching PSX content id to title id list");
+    pkgi_scan_pbps();
+    
 }
 
 int pkgi_update(pkgi_input* input)
@@ -859,7 +870,8 @@ int pkgi_text_height(const char* text)
 
 std::string pkgi_get_system_version()
 {
-    static auto const version = [] {
+    static auto const version = []
+    {
         SceKernelFwInfo info{};
         info.size = sizeof(info);
         const auto res = _vshSblGetSystemSwVersion(&info);
@@ -872,7 +884,8 @@ std::string pkgi_get_system_version()
     return version;
 }
 
-bool pkgi_is_module_present(const char* module_name) {
-    SceUInt64 unk;
-    return _vshKernelSearchModuleByName(module_name, &unk) >= 0;
+bool pkgi_is_module_present(const char* module_name)
+{
+    SceSysmoduleOpt opt{};
+    return _vshKernelSearchModuleByName(module_name, &opt) >= 0;
 }

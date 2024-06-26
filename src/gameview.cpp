@@ -48,11 +48,11 @@ void GameView::render()
                     ImGuiWindowFlags_NoScrollbar |
                     ImGuiWindowFlags_NoScrollWithMouse |
                     ImGuiWindowFlags_NoCollapse |
-                    ImGuiWindowFlags_NoSavedSettings |
-                    ImGuiWindowFlags_NoInputs);
+                    ImGuiWindowFlags_NoSavedSettings);
 
-    ImGui::PushTextWrapPos(_image_fetcher.get_texture() == nullptr ?
-        0.f : GameViewWidth - 300.f);
+    ImGui::PushTextWrapPos(
+            _image_fetcher.get_texture() == nullptr ? 0.f
+                                                    : GameViewWidth - 300.f);
     ImGui::Text(fmt::format("Firmware version: {}", pkgi_get_system_version())
                         .c_str());
     ImGui::Text(
@@ -103,6 +103,7 @@ void GameView::render()
         if (ImGui::Button("Install game###installgame"))
             start_download_package();
     }
+    ImGui::SetItemDefaultFocus();
 
     if (_base_comppack)
     {
@@ -160,7 +161,8 @@ static const auto Green = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
 void GameView::printDiagnostic()
 {
     bool ok = true;
-    auto const printError = [&](auto const& str) {
+    auto const printError = [&](auto const& str)
+    {
         ok = false;
         ImGui::TextColored(Red, str);
     };
@@ -175,11 +177,9 @@ void GameView::printDiagnostic()
         if (!_comppack_versions.present)
         {
             if (_refood_present)
-                ImGui::Text(
-                        "- This game will work thanks to reF00D");
+                ImGui::Text("- This game will work thanks to reF00D");
             else if (_0syscall6_present)
-                ImGui::Text(
-                        "- This game will work thanks to 0syscall6");
+                ImGui::Text("- This game will work thanks to 0syscall6");
             else
                 printError(
                         "- Your firmware is too old to play this game, you "
@@ -188,8 +188,7 @@ void GameView::printDiagnostic()
     }
     else
     {
-        ImGui::Text(
-                "- Your firmware is recent enough");
+        ImGui::Text("- Your firmware is recent enough");
     }
 
     if (_comppack_versions.present && _comppack_versions.base.empty() &&
@@ -257,18 +256,28 @@ void GameView::refresh()
     _comppack_versions = pkgi_get_comppack_versions(_item->titleid);
 }
 
+
+void GameView::do_download() {
+    pkgi_start_download(*_downloader, *_item);
+    _item->presence = PresenceUnknown;
+}
+
 void GameView::start_download_package()
 {
     if (_item->presence == PresenceInstalled)
     {
         LOGF("[{}] {} - already installed", _item->titleid, _item->name);
-        pkgi_dialog_error("Already installed");
+        pkgi_dialog_question(
+        fmt::format(
+                "{} is already installed."
+                "Would you like to redownload it?",
+                _item->name)
+                .c_str(),
+        {{"Redownload.", [this] { this->do_download(); }},
+         {"Dont Redownload.", [] {} }});
         return;
     }
-
-    pkgi_start_download(*_downloader, *_item);
-
-    _item->presence = PresenceUnknown;
+    this->do_download();
 }
 
 void GameView::cancel_download_package()
@@ -281,15 +290,16 @@ void GameView::start_download_comppack(bool patch)
 {
     const auto& entry = patch ? _patch_comppack : _base_comppack;
 
-    _downloader->add(DownloadItem{patch ? CompPackPatch : CompPackBase,
-                                  _item->name,
-                                  _item->titleid,
-                                  _config->comppack_url + entry->path,
-                                  std::vector<uint8_t>{},
-                                  std::vector<uint8_t>{},
-                                  false,
-                                  "ux0:",
-                                  entry->app_version});
+    _downloader->add(DownloadItem{
+            patch ? CompPackPatch : CompPackBase,
+            _item->name,
+            _item->titleid,
+            _config->comppack_url + entry->path,
+            std::vector<uint8_t>{},
+            std::vector<uint8_t>{},
+            false,
+            "ux0:",
+            entry->app_version});
 }
 
 void GameView::cancel_download_comppacks(bool patch)

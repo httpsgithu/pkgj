@@ -1,9 +1,9 @@
 #pragma once
 
-#include <fmt/format.h>
-
 #include <array>
 #include <cstdint>
+#include <fmt/format.h>
+#include <vector>
 
 #ifdef _MSC_VER
 #define GCC_ALIGN(n)

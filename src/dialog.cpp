@@ -7,6 +7,7 @@ extern "C"
 #include "pkgi.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 namespace
 {
@@ -134,8 +135,7 @@ void pkgi_do_dialog()
                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
                     ImGuiWindowFlags_NoScrollWithMouse |
                     ImGuiWindowFlags_NoCollapse |
-                    ImGuiWindowFlags_NoSavedSettings |
-                    ImGuiWindowFlags_NoInputs);
+                    ImGuiWindowFlags_NoSavedSettings);
     ImGui::PushTextWrapPos(0.f);
     if (local_type == DialogError)
         ImGui::TextColored(
@@ -146,7 +146,8 @@ void pkgi_do_dialog()
     if (local_type == DialogQuestion)
     {
         ImGui::Separator();
-        for (auto const response : responses)
+        int i = 0;
+        for (auto const& response : responses)
         {
             if (ImGui::Button(
                         response.text.c_str(),
@@ -158,6 +159,15 @@ void pkgi_do_dialog()
                 dialog_responses = {};
                 pkgi_dialog_unlock();
                 callback = response.callback;
+            }
+            if (++i == 1)
+            {
+                // ImGui::SetItemDefaultFocus doesn't seem to work here...
+                ImGuiContext& g = *GImGui;
+                ImGuiWindow* window = g.CurrentWindow;
+                if (window->Appearing)
+                    ImGui::SetKeyboardFocusHere(-1);
+                ImGui::SetItemDefaultFocus();
             }
         }
     }
